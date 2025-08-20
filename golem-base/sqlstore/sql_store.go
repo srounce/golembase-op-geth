@@ -1,0 +1,439 @@
+package sqlstore
+
+import (
+	"context"
+	"database/sql"
+	_ "embed"
+	"errors"
+	"fmt"
+	"iter"
+	"os"
+	"path/filepath"
+
+	"github.com/ethereum/go-ethereum/common"
+	"github.com/ethereum/go-ethereum/golem-base/sqlstore/sqlitegolem"
+	"github.com/ethereum/go-ethereum/golem-base/storageutil/entity"
+	"github.com/ethereum/go-ethereum/log"
+	_ "github.com/mattn/go-sqlite3"
+)
+
+type BlockWal struct {
+	BlockInfo  BlockInfo
+	Operations []Operation
+}
+type BlockInfo struct {
+	Number     uint64      `json:"number,string"`
+	Hash       common.Hash `json:"hash"`
+	ParentHash common.Hash `json:"parentHash"`
+}
+
+type Operation struct {
+	Create *Create      `json:"create,omitempty"`
+	Update *Update      `json:"update,omitempty"`
+	Delete *common.Hash `json:"delete,omitempty"`
+	Extend *ExtendBTL   `json:"extend,omitempty"`
+}
+
+type Create struct {
+	EntityKey          common.Hash                `json:"entityKey"`
+	ExpiresAtBlock     uint64                     `json:"expiresAtBlock"`
+	Payload            []byte                     `json:"payload"`
+	StringAnnotations  []entity.StringAnnotation  `json:"stringAnnotations"`
+	NumericAnnotations []entity.NumericAnnotation `json:"numericAnnotations"`
+	Owner              common.Address             `json:"owner"`
+}
+
+type Update struct {
+	EntityKey          common.Hash                `json:"entityKey"`
+	ExpiresAtBlock     uint64                     `json:"expiresAtBlock"`
+	Payload            []byte                     `json:"payload"`
+	StringAnnotations  []entity.StringAnnotation  `json:"stringAnnotations"`
+	NumericAnnotations []entity.NumericAnnotation `json:"numericAnnotations"`
+}
+
+type ExtendBTL struct {
+	EntityKey    common.Hash `json:"entityKey"`
+	OldExpiresAt uint64      `json:"oldExpiresAt"`
+	NewExpiresAt uint64      `json:"newExpiresAt"`
+}
+
+// SQLStore encapsulates the SQLite SQLStore functionality
+type SQLStore struct {
+	db *sql.DB
+}
+
+// NewStore creates a new ETL instance with database connection and schema setup
+func NewStore(dbFile string) (*SQLStore, error) {
+	dir := filepath.Dir(dbFile)
+	err := os.MkdirAll(dir, 0755)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create database directory: %w", err)
+	}
+
+	db, err := sql.Open("sqlite3", fmt.Sprintf("file:%s?cache=shared&mode=rwc&_journal_mode=WAL", dbFile))
+	if err != nil {
+		return nil, fmt.Errorf("failed to open database: %w", err)
+	}
+
+	// Check if schema exists and apply if needed
+	ctx := context.Background()
+	var tableName string
+	err = db.QueryRowContext(ctx, `
+		SELECT name FROM sqlite_master 
+		WHERE type='table' AND name='entities';
+	`).Scan(&tableName)
+
+	switch err {
+	case sql.ErrNoRows:
+		err = sqlitegolem.ApplySchema(ctx, db)
+		if err != nil {
+			db.Close()
+			return nil, err
+		}
+	case nil:
+		// schema exists, do nothing
+	default:
+		db.Close()
+		return nil, fmt.Errorf("failed to check schema: %w", err)
+	}
+
+	return &SQLStore{db: db}, nil
+}
+
+// Close closes the database connection
+func (e *SQLStore) Close() error {
+	return e.db.Close()
+}
+
+// GetQueries returns a new sqlitegolem.Queries instance for autocommit operations
+func (e *SQLStore) GetQueries() *sqlitegolem.Queries {
+	return sqlitegolem.New(e.db)
+}
+
+func (e *SQLStore) GetProcessingStatus(ctx context.Context, networkID string) (*sqlitegolem.GetProcessingStatusRow, error) {
+	result, err := e.GetQueries().GetProcessingStatus(ctx, networkID)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return &sqlitegolem.GetProcessingStatusRow{
+				LastProcessedBlockNumber: 0,
+				LastProcessedBlockHash:   "",
+			}, nil
+		}
+		return nil, err
+	}
+	return &result, nil
+}
+
+func (e *SQLStore) SnapSyncToBlock(
+	ctx context.Context,
+	networkID string,
+	blockNumber uint64,
+	blockHash common.Hash,
+	entities iter.Seq2[
+		*struct {
+			Key      common.Hash
+			Metadata entity.EntityMetaData
+			Payload  []byte
+		},
+		error,
+	],
+) (err error) {
+	log.Info("snap syncing to block start", "blockNumber", blockNumber, "blockHash", blockHash.Hex())
+	defer log.Info("snap syncing to block end", "blockNumber", blockNumber, "blockHash", blockHash.Hex())
+
+	tx, err := e.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("failed to begin transaction: %w", err)
+	}
+
+	defer func() {
+		if err != nil {
+			err = errors.Join(err, tx.Rollback())
+		}
+	}()
+
+	txDB := sqlitegolem.New(tx)
+
+	// Ensure single network constraint for snap sync
+	hasNetwork, err := txDB.HasProcessingStatus(ctx, networkID)
+	if err != nil {
+		return fmt.Errorf("failed to check if network exists: %w", err)
+	}
+
+	if !hasNetwork {
+		// This is a new network, check if there are already other networks
+		networkCount, err := txDB.CountNetworks(ctx)
+		if err != nil {
+			return fmt.Errorf("failed to count existing networks: %w", err)
+		}
+
+		if networkCount > 0 {
+			return fmt.Errorf("cannot snap sync to network %s: database already contains %d network(s), only one network is allowed", networkID, networkCount)
+		}
+
+		// First network, need to insert initial processing status
+		err = txDB.InsertProcessingStatus(ctx, sqlitegolem.InsertProcessingStatusParams{
+			Network:                  networkID,
+			LastProcessedBlockNumber: int64(blockNumber),
+			LastProcessedBlockHash:   blockHash.Hex(),
+		})
+		if err != nil {
+			return fmt.Errorf("failed to insert initial processing status: %w", err)
+		}
+	}
+
+	// Clear all existing entities, annotations for a clean snap sync
+	err = txDB.DeleteAllEntities(ctx)
+	if err != nil {
+		return fmt.Errorf("failed to clear entities: %w", err)
+	}
+
+	err = txDB.DeleteAllStringAnnotations(ctx)
+	if err != nil {
+		return fmt.Errorf("failed to clear string annotations: %w", err)
+	}
+
+	err = txDB.DeleteAllNumericAnnotations(ctx)
+	if err != nil {
+		return fmt.Errorf("failed to clear numeric annotations: %w", err)
+	}
+
+	// Insert all entities from the snapshot
+	for entity, err := range entities {
+		if err != nil {
+			return fmt.Errorf("failed to get entity: %w", err)
+		}
+
+		// Insert the entity
+		err = txDB.InsertEntity(ctx, sqlitegolem.InsertEntityParams{
+			Key:          entity.Key.Hex(),
+			ExpiresAt:    int64(entity.Metadata.ExpiresAtBlock),
+			Payload:      entity.Payload,
+			OwnerAddress: entity.Metadata.Owner.Hex(),
+		})
+		if err != nil {
+			return fmt.Errorf("failed to insert entity %s: %w", entity.Key.Hex(), err)
+		}
+
+		// Insert string annotations
+		for _, annotation := range entity.Metadata.StringAnnotations {
+			err = txDB.InsertStringAnnotation(ctx, sqlitegolem.InsertStringAnnotationParams{
+				EntityKey:     entity.Key.Hex(),
+				AnnotationKey: annotation.Key,
+				Value:         annotation.Value,
+			})
+			if err != nil {
+				return fmt.Errorf("failed to insert string annotation for entity %s: %w", entity.Key.Hex(), err)
+			}
+		}
+
+		// Insert numeric annotations
+		for _, annotation := range entity.Metadata.NumericAnnotations {
+			err = txDB.InsertNumericAnnotation(ctx, sqlitegolem.InsertNumericAnnotationParams{
+				EntityKey:     entity.Key.Hex(),
+				AnnotationKey: annotation.Key,
+				Value:         int64(annotation.Value),
+			})
+			if err != nil {
+				return fmt.Errorf("failed to insert numeric annotation for entity %s: %w", entity.Key.Hex(), err)
+			}
+		}
+	}
+
+	// Update processing status to the snap sync block
+	err = txDB.UpdateProcessingStatus(ctx, sqlitegolem.UpdateProcessingStatusParams{
+		Network:                  networkID,
+		LastProcessedBlockNumber: int64(blockNumber),
+		LastProcessedBlockHash:   blockHash.Hex(),
+	})
+	if err != nil {
+		return fmt.Errorf("failed to update processing status: %w", err)
+	}
+
+	return tx.Commit()
+}
+
+// InsertBlock processes a single block from the WAL and inserts it into the database
+func (e *SQLStore) InsertBlock(ctx context.Context, blockWal BlockWal, networkID string) (err error) {
+	log.Info("processing block", "block", blockWal.BlockInfo.Number)
+	defer log.Info("processing block end", "block", blockWal.BlockInfo.Number)
+
+	tx, err := e.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("failed to begin transaction: %w", err)
+	}
+
+	defer func() {
+		if err != nil {
+			err = errors.Join(err, tx.Rollback())
+		}
+	}()
+
+	txDB := sqlitegolem.New(tx)
+
+	// Ensure single network constraint: check if this would create a new network
+	hasNetwork, err := txDB.HasProcessingStatus(ctx, networkID)
+	if err != nil {
+		return fmt.Errorf("failed to check if network exists: %w", err)
+	}
+
+	if !hasNetwork {
+		// This is a new network, check if there are already other networks
+		networkCount, err := txDB.CountNetworks(ctx)
+		if err != nil {
+			return fmt.Errorf("failed to count existing networks: %w", err)
+		}
+
+		if networkCount > 0 {
+			return fmt.Errorf("cannot add network %s: database already contains %d network(s), only one network is allowed", networkID, networkCount)
+		}
+
+		err = txDB.InsertProcessingStatus(ctx, sqlitegolem.InsertProcessingStatusParams{
+			Network:                  networkID,
+			LastProcessedBlockNumber: int64(blockWal.BlockInfo.Number - 1),
+			LastProcessedBlockHash:   blockWal.BlockInfo.ParentHash.Hex(),
+		})
+		if err != nil {
+			return fmt.Errorf("failed to insert initial processing status: %w", err)
+		}
+	}
+
+	log.Info("hasNetwork", "hasNetwork", hasNetwork)
+
+	// Check if parent block hash matches the expected value from processing status
+	if blockWal.BlockInfo.Number > 1 { // Skip check for genesis block
+		processingStatus, err := txDB.GetProcessingStatus(ctx, networkID)
+		if err != nil {
+			return fmt.Errorf("failed to get processing status: %w", err)
+		}
+
+		expectedParentHash := processingStatus.LastProcessedBlockHash
+		actualParentHash := blockWal.BlockInfo.ParentHash.Hex()
+
+		if expectedParentHash != actualParentHash {
+			return fmt.Errorf("parent block hash mismatch: expected %s, got %s", expectedParentHash, actualParentHash)
+		}
+
+		// Verify block number sequence
+		expectedBlockNumber := processingStatus.LastProcessedBlockNumber + 1
+		if int64(blockWal.BlockInfo.Number) != expectedBlockNumber {
+			return fmt.Errorf("block number sequence error: expected %d, got %d", expectedBlockNumber, blockWal.BlockInfo.Number)
+		}
+	}
+
+	for _, op := range blockWal.Operations {
+
+		switch {
+		case op.Create != nil:
+			log.Info("create", "entity", op.Create.EntityKey.Hex())
+			err = txDB.InsertEntity(ctx, sqlitegolem.InsertEntityParams{
+				Key:          op.Create.EntityKey.Hex(),
+				ExpiresAt:    int64(op.Create.ExpiresAtBlock),
+				Payload:      op.Create.Payload,
+				OwnerAddress: op.Create.Owner.Hex(),
+			})
+			if err != nil {
+				return fmt.Errorf("failed to insert entity: %w", err)
+			}
+
+			for _, annotation := range op.Create.NumericAnnotations {
+				err = txDB.InsertNumericAnnotation(ctx, sqlitegolem.InsertNumericAnnotationParams{
+					EntityKey:     op.Create.EntityKey.Hex(),
+					AnnotationKey: annotation.Key,
+					Value:         int64(annotation.Value),
+				})
+				if err != nil {
+					return fmt.Errorf("failed to insert numeric annotation: %w", err)
+				}
+			}
+
+			for _, annotation := range op.Create.StringAnnotations {
+				err = txDB.InsertStringAnnotation(ctx, sqlitegolem.InsertStringAnnotationParams{
+					EntityKey:     op.Create.EntityKey.Hex(),
+					AnnotationKey: annotation.Key,
+					Value:         annotation.Value,
+				})
+				if err != nil {
+					return fmt.Errorf("failed to insert string annotation: %w", err)
+				}
+			}
+		case op.Update != nil:
+			existingEntity, err := txDB.GetEntity(ctx, op.Update.EntityKey.Hex())
+			if err != nil {
+				return fmt.Errorf("failed to get existing entity: %w", err)
+			}
+
+			txDB.DeleteEntity(ctx, op.Update.EntityKey.Hex())
+			txDB.DeleteNumericAnnotations(ctx, op.Update.EntityKey.Hex())
+			txDB.DeleteStringAnnotations(ctx, op.Update.EntityKey.Hex())
+
+			txDB.InsertEntity(ctx, sqlitegolem.InsertEntityParams{
+				Key:          op.Update.EntityKey.Hex(),
+				ExpiresAt:    int64(op.Update.ExpiresAtBlock),
+				Payload:      op.Update.Payload,
+				OwnerAddress: existingEntity.OwnerAddress,
+			})
+
+			for _, annotation := range op.Update.NumericAnnotations {
+				err = txDB.InsertNumericAnnotation(ctx, sqlitegolem.InsertNumericAnnotationParams{
+					EntityKey:     op.Update.EntityKey.Hex(),
+					AnnotationKey: annotation.Key,
+					Value:         int64(annotation.Value),
+				})
+				if err != nil {
+					return fmt.Errorf("failed to insert numeric annotation: %w", err)
+				}
+			}
+
+			for _, annotation := range op.Update.StringAnnotations {
+				err = txDB.InsertStringAnnotation(ctx, sqlitegolem.InsertStringAnnotationParams{
+					EntityKey:     op.Update.EntityKey.Hex(),
+					AnnotationKey: annotation.Key,
+					Value:         annotation.Value,
+				})
+				if err != nil {
+					return fmt.Errorf("failed to insert string annotation: %w", err)
+				}
+			}
+		case op.Delete != nil:
+			err = txDB.DeleteEntity(ctx, op.Delete.Hex())
+			if err != nil {
+				return fmt.Errorf("failed to delete entity: %w", err)
+			}
+
+			err = txDB.DeleteNumericAnnotations(ctx, op.Delete.Hex())
+			if err != nil {
+				return fmt.Errorf("failed to delete numeric annotations: %w", err)
+			}
+
+			err = txDB.DeleteStringAnnotations(ctx, op.Delete.Hex())
+			if err != nil {
+				return fmt.Errorf("failed to delete string annotations: %w", err)
+			}
+		case op.Extend != nil:
+			log.Info("extend BTL", "entity", op.Extend.EntityKey.Hex())
+
+			// Update the entity with the new expiry time
+			err = txDB.UpdateEntityExpiresAt(ctx, sqlitegolem.UpdateEntityExpiresAtParams{
+				ExpiresAt: int64(op.Extend.NewExpiresAt),
+				Key:       op.Extend.EntityKey.Hex(),
+			})
+			if err != nil {
+				return fmt.Errorf("failed to extend entity BTL: %w", err)
+			}
+		}
+
+		log.Info("operation", "operation", op)
+	}
+
+	err = txDB.UpdateProcessingStatus(ctx, sqlitegolem.UpdateProcessingStatusParams{
+		Network:                  networkID,
+		LastProcessedBlockNumber: int64(blockWal.BlockInfo.Number),
+		LastProcessedBlockHash:   blockWal.BlockInfo.Hash.Hex(),
+	})
+	if err != nil {
+		return fmt.Errorf("failed to insert processing status: %w", err)
+	}
+
+	return tx.Commit()
+}

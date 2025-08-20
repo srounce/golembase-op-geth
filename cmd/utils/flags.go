@@ -43,6 +43,7 @@ import (
 	"github.com/ethereum/go-ethereum/common/hexutil"
 	"github.com/ethereum/go-ethereum/core"
 	"github.com/ethereum/go-ethereum/core/rawdb"
+	"github.com/ethereum/go-ethereum/core/state"
 	"github.com/ethereum/go-ethereum/core/txpool/blobpool"
 	"github.com/ethereum/go-ethereum/core/txpool/legacypool"
 	"github.com/ethereum/go-ethereum/core/types"
@@ -58,7 +59,7 @@ import (
 	"github.com/ethereum/go-ethereum/ethdb"
 	"github.com/ethereum/go-ethereum/ethdb/remotedb"
 	"github.com/ethereum/go-ethereum/ethstats"
-	"github.com/ethereum/go-ethereum/golem-base/wal"
+	"github.com/ethereum/go-ethereum/golem-base/sqlstore"
 	"github.com/ethereum/go-ethereum/graphql"
 	"github.com/ethereum/go-ethereum/internal/ethapi"
 	"github.com/ethereum/go-ethereum/internal/flags"
@@ -904,9 +905,9 @@ var (
 	}
 
 	// Golem Base Settings
-	GolemBaseWriteAheadLogDir = &flags.DirectoryFlag{
-		Name:     "golembase.writeaheadlog",
-		Usage:    "Path to the write-ahead log directory for the Golem Base",
+	GolemBaseSQLStateFile = &cli.PathFlag{
+		Name:     "golembase.sqlstatefile",
+		Usage:    "Path to the SQL state file for the Golem Base",
 		Category: flags.MiscCategory,
 	}
 
@@ -1574,18 +1575,10 @@ func SetNodeConfig(ctx *cli.Context, cfg *node.Config) {
 		cfg.DBEngine = dbEngine
 	}
 
-	if ctx.IsSet(GolemBaseWriteAheadLogDir.Name) {
+	cfg.GolemBaseSQLStateFile = filepath.Join(cfg.DataDir, "golem-base.db")
 
-		_, err := os.Stat(GolemBaseWriteAheadLogDir.Value.String())
-
-		if errors.Is(err, os.ErrNotExist) {
-			err = os.MkdirAll(GolemBaseWriteAheadLogDir.Value.String(), 0755)
-			if err != nil {
-				Fatalf("Failed to create write-ahead log directory: %v", err)
-			}
-		}
-
-		cfg.GolemBaseWriteAheadLogDir = ctx.String(GolemBaseWriteAheadLogDir.Name)
+	if ctx.IsSet(GolemBaseSQLStateFile.Name) {
+		cfg.GolemBaseSQLStateFile = ctx.String(GolemBaseSQLStateFile.Name)
 	}
 
 	// deprecation notice for log debug flags (TODO: find a more appropriate place to put these?)
@@ -2487,24 +2480,29 @@ func MakeChain(ctx *cli.Context, stack *node.Node, readonly bool) (*core.BlockCh
 		}
 	}
 
-	walDir := stack.Config().GolemBaseWriteAheadLogDir
-	if walDir != "" {
-		chain, err := core.NewBlockChainWithOnNewBlock(chainDb, cache, gspec, nil, engine, vmcfg, nil, func(block *types.Block, receipts []*types.Receipt) error {
-			return wal.WriteLogForBlock(walDir, block, config.ChainID, receipts)
-		})
-		if err != nil {
-			Fatalf("Can't create BlockChain with onNewBlock: %v", err)
-		}
-		return chain, chainDb
-	}
-
-	// Disable transaction indexing/unindexing by default.
-	chain, err := core.NewBlockChain(chainDb, cache, gspec, nil, engine, vmcfg, nil)
+	log.Info("Creating SQLStore", "path", stack.Config().GolemBaseSQLStateFile)
+	st, err := sqlstore.NewStore(
+		stack.Config().GolemBaseSQLStateFile,
+	)
 	if err != nil {
-		Fatalf("Can't create BlockChain: %v", err)
+		Fatalf("failed to create SQLStore: %v", err)
 	}
 
+	chain, err := core.NewBlockChainWithOnNewBlock(chainDb, cache, gspec, nil, engine, vmcfg, nil, func(db *state.CachingDB, hc *core.HeaderChain, chainID *big.Int, block *types.Block, receipts []*types.Receipt) error {
+		return sqlstore.WriteLogForBlockSqlite(
+			st,
+			db,
+			hc,
+			block,
+			config.ChainID,
+			receipts,
+		)
+	})
+	if err != nil {
+		Fatalf("Can't create BlockChain with onNewBlock: %v", err)
+	}
 	return chain, chainDb
+
 }
 
 // MakeConsolePreloads retrieves the absolute paths for the console JavaScript

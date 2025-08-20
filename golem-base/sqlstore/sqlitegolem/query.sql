@@ -43,6 +43,9 @@ INSERT INTO processing_status (network, last_processed_block_number, last_proces
 -- name: HasProcessingStatus :one
 SELECT COUNT(*) > 0 FROM processing_status WHERE network = ?;
 
+-- name: CountNetworks :one
+SELECT COUNT(DISTINCT network) FROM processing_status;
+
 -- name: DeleteProcessingStatus :exec
 DELETE FROM processing_status WHERE network = ?;
 
@@ -55,3 +58,14 @@ SELECT COUNT(*) > 0 FROM string_annotations WHERE entity_key = ?;
 -- name: NumericAnnotationsForEntityExists :one
 SELECT COUNT(*) > 0 FROM numeric_annotations WHERE entity_key = ?;
 
+-- name: DeleteAllEntities :exec
+DELETE FROM entities;
+
+-- name: DeleteAllStringAnnotations :exec
+DELETE FROM string_annotations;
+
+-- name: DeleteAllNumericAnnotations :exec
+DELETE FROM numeric_annotations;
+
+-- name: DeleteAllProcessingStatus :exec
+DELETE FROM processing_status;
