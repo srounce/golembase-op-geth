@@ -151,8 +151,8 @@ func WriteLogForBlockSqlite(
 		Operations: []Operation{},
 	}
 
-	for txIx, tx := range txns {
-		receipt := receipts[txIx]
+	for i, tx := range txns {
+		receipt := receipts[i]
 		if receipt.Status == types.ReceiptStatusFailed {
 			continue
 		}
@@ -180,7 +180,7 @@ func WriteLogForBlockSqlite(
 				})
 
 			}
-
+			// create
 		case toAddr == address.GolemBaseStorageProcessorAddress:
 
 			stx := storagetx.StorageTransaction{}
@@ -212,9 +212,9 @@ func WriteLogForBlockSqlite(
 
 			}
 
-			for opIx, create := range stx.Create {
+			for i, create := range stx.Create {
 
-				l := createdLogs[opIx]
+				l := createdLogs[i]
 				key := l.Topics[1]
 				expiresAtBlockU256 := uint256.NewInt(0).SetBytes(l.Data)
 				expiresAtBlock := expiresAtBlockU256.Uint64()
@@ -231,8 +231,6 @@ func WriteLogForBlockSqlite(
 					StringAnnotations:  create.StringAnnotations,
 					NumericAnnotations: create.NumericAnnotations,
 					Owner:              from,
-					TransactionIndex:   uint64(txIx),
-					OperationIndex:     uint64(opIx),
 				}
 
 				wal.Operations = append(wal.Operations, Operation{
@@ -247,9 +245,9 @@ func WriteLogForBlockSqlite(
 				})
 			}
 
-			for opIx, update := range stx.Update {
+			for i, update := range stx.Update {
 
-				log := updatedLogs[opIx]
+				log := updatedLogs[i]
 				key := log.Topics[1]
 				expiresAtBlockU256 := uint256.NewInt(0).SetBytes(log.Data)
 				expiresAtBlock := expiresAtBlockU256.Uint64()
@@ -260,8 +258,6 @@ func WriteLogForBlockSqlite(
 					Payload:            update.Payload,
 					StringAnnotations:  update.StringAnnotations,
 					NumericAnnotations: update.NumericAnnotations,
-					TransactionIndex:   uint64(txIx),
-					OperationIndex:     uint64(opIx),
 				}
 
 				wal.Operations = append(wal.Operations, Operation{
@@ -269,9 +265,9 @@ func WriteLogForBlockSqlite(
 				})
 			}
 
-			for opIx, extend := range stx.Extend {
+			for i, extend := range stx.Extend {
 
-				log := extendedLogs[opIx]
+				log := extendedLogs[i]
 
 				oldExpiresAtU256 := uint256.NewInt(0).SetBytes(log.Data[:32])
 				oldExpiresAt := oldExpiresAtU256.Uint64()

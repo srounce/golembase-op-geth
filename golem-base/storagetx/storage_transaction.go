@@ -63,7 +63,7 @@ func (tx *StorageTransaction) Validate() error {
 		// Validate the annotation identifiers
 		for _, annotation := range create.StringAnnotations {
 			if !entity.AnnotationIdentRegexCompiled.MatchString(annotation.Key) {
-				return fmt.Errorf("invalid annotation identifier (must match `%s`): %s",
+				return fmt.Errorf("Invalid annotation identifier (must match `%s`): %s",
 					entity.AnnotationIdentRegexCompiled.String(),
 					annotation.Key,
 				)
@@ -77,7 +77,7 @@ func (tx *StorageTransaction) Validate() error {
 		}
 		for _, annotation := range create.NumericAnnotations {
 			if !entity.AnnotationIdentRegexCompiled.MatchString(annotation.Key) {
-				return fmt.Errorf("invalid annotation identifier (must match `%s`): %s",
+				return fmt.Errorf("Invalid annotation identifier (must match `%s`): %s",
 					entity.AnnotationIdentRegexCompiled.String(),
 					annotation.Key,
 				)
@@ -100,7 +100,7 @@ func (tx *StorageTransaction) Validate() error {
 
 		for _, annotation := range update.StringAnnotations {
 			if !entity.AnnotationIdentRegexCompiled.MatchString(annotation.Key) {
-				return fmt.Errorf("invalid annotation identifier (must match `%s`): %s",
+				return fmt.Errorf("Invalid annotation identifier (must match `%s`): %s",
 					entity.AnnotationIdentRegexCompiled.String(),
 					annotation.Key,
 				)
@@ -112,7 +112,7 @@ func (tx *StorageTransaction) Validate() error {
 		}
 		for _, annotation := range update.NumericAnnotations {
 			if !entity.AnnotationIdentRegexCompiled.MatchString(annotation.Key) {
-				return fmt.Errorf("invalid annotation identifier (must match `%s`): %s",
+				return fmt.Errorf("Invalid annotation identifier (must match `%s`): %s",
 					entity.AnnotationIdentRegexCompiled.String(),
 					annotation.Key,
 				)
@@ -155,7 +155,7 @@ type ExtendBTL struct {
 	NumberOfBlocks uint64      `json:"numberOfBlocks"`
 }
 
-func (tx *StorageTransaction) Run(blockNumber uint64, txHash common.Hash, txIx int, sender common.Address, access storageutil.StateAccess) (_ []*types.Log, err error) {
+func (tx *StorageTransaction) Run(blockNumber uint64, txHash common.Hash, sender common.Address, access storageutil.StateAccess) (_ []*types.Log, err error) {
 
 	defer func() {
 		if err != nil {
@@ -197,27 +197,23 @@ func (tx *StorageTransaction) Run(blockNumber uint64, txHash common.Hash, txIx i
 
 	}
 
-	for opIx, create := range tx.Create {
+	for i, create := range tx.Create {
 
 		if create.BTL == 0 {
-			return nil, fmt.Errorf("create BTL is 0 for create %d", opIx)
+			return nil, fmt.Errorf("create BTL is 0 for create %d", i)
 		}
 
 		// Convert i to a big integer and pad to 32 bytes
-		bigI := big.NewInt(int64(opIx))
+		bigI := big.NewInt(int64(i))
 		paddedI := common.LeftPadBytes(bigI.Bytes(), 32)
 
 		key := crypto.Keccak256Hash(txHash.Bytes(), create.Payload, paddedI)
 
 		ap := &entity.EntityMetaData{
-			Owner:               sender,
-			ExpiresAtBlock:      blockNumber + create.BTL,
-			StringAnnotations:   create.StringAnnotations,
-			NumericAnnotations:  create.NumericAnnotations,
-			CreatedAtBlock:      blockNumber,
-			LastModifiedAtBlock: blockNumber,
-			OperationIndex:      uint64(opIx),
-			TransactionIndex:    uint64(txIx),
+			Owner:              sender,
+			ExpiresAtBlock:     blockNumber + create.BTL,
+			StringAnnotations:  create.StringAnnotations,
+			NumericAnnotations: create.NumericAnnotations,
 		}
 
 		err := storeEntity(key, ap, create.Payload, true)
@@ -268,7 +264,7 @@ func (tx *StorageTransaction) Run(blockNumber uint64, txHash common.Hash, txIx i
 		}
 	}
 
-	for opIx, update := range tx.Update {
+	for _, update := range tx.Update {
 
 		if update.BTL == 0 {
 			return nil, fmt.Errorf("update BTL is 0 for entity %s", update.EntityKey.Hex())
@@ -289,14 +285,10 @@ func (tx *StorageTransaction) Run(blockNumber uint64, txHash common.Hash, txIx i
 		}
 
 		ap := &entity.EntityMetaData{
-			ExpiresAtBlock:      blockNumber + update.BTL,
-			StringAnnotations:   update.StringAnnotations,
-			NumericAnnotations:  update.NumericAnnotations,
-			Owner:               oldMetaData.Owner,
-			CreatedAtBlock:      oldMetaData.CreatedAtBlock,
-			LastModifiedAtBlock: blockNumber,
-			OperationIndex:      uint64(opIx),
-			TransactionIndex:    uint64(txIx),
+			ExpiresAtBlock:     blockNumber + update.BTL,
+			StringAnnotations:  update.StringAnnotations,
+			NumericAnnotations: update.NumericAnnotations,
+			Owner:              oldMetaData.Owner,
 		}
 
 		err = storeEntity(update.EntityKey, ap, update.Payload, false)
@@ -345,7 +337,7 @@ func (tx *StorageTransaction) Run(blockNumber uint64, txHash common.Hash, txIx i
 	return logs, nil
 }
 
-func ExecuteTransaction(d []byte, blockNumber uint64, txHash common.Hash, txIx int, sender common.Address, access storageutil.StateAccess) ([]*types.Log, error) {
+func ExecuteTransaction(d []byte, blockNumber uint64, txHash common.Hash, sender common.Address, access storageutil.StateAccess) ([]*types.Log, error) {
 	tx := &StorageTransaction{}
 	err := rlp.DecodeBytes(d, tx)
 	if err != nil {
@@ -354,7 +346,7 @@ func ExecuteTransaction(d []byte, blockNumber uint64, txHash common.Hash, txIx i
 
 	st := storageaccounting.NewSlotUsageCounter(access)
 
-	logs, err := tx.Run(blockNumber, txHash, txIx, sender, st)
+	logs, err := tx.Run(blockNumber, txHash, sender, st)
 	if err != nil {
 		log.Error("Failed to run storage transaction", "error", err)
 		return nil, fmt.Errorf("failed to run storage transaction: %w", err)
