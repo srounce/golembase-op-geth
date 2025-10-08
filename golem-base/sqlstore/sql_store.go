@@ -17,6 +17,8 @@ import (
 	_ "github.com/mattn/go-sqlite3"
 )
 
+const entitiesSchemaVersion = uint64(1)
+
 type BlockWal struct {
 	BlockInfo  BlockInfo
 	Operations []Operation
@@ -41,6 +43,8 @@ type Create struct {
 	StringAnnotations  []entity.StringAnnotation  `json:"stringAnnotations"`
 	NumericAnnotations []entity.NumericAnnotation `json:"numericAnnotations"`
 	Owner              common.Address             `json:"owner"`
+	TransactionIndex   uint64                     `json:"txIndex"`
+	OperationIndex     uint64                     `json:"opIndex"`
 }
 
 type Update struct {
@@ -49,12 +53,16 @@ type Update struct {
 	Payload            []byte                     `json:"payload"`
 	StringAnnotations  []entity.StringAnnotation  `json:"stringAnnotations"`
 	NumericAnnotations []entity.NumericAnnotation `json:"numericAnnotations"`
+	TransactionIndex   uint64                     `json:"txIndex"`
+	OperationIndex     uint64                     `json:"opIndex"`
 }
 
 type ExtendBTL struct {
-	EntityKey    common.Hash `json:"entityKey"`
-	OldExpiresAt uint64      `json:"oldExpiresAt"`
-	NewExpiresAt uint64      `json:"newExpiresAt"`
+	EntityKey        common.Hash `json:"entityKey"`
+	OldExpiresAt     uint64      `json:"oldExpiresAt"`
+	NewExpiresAt     uint64      `json:"newExpiresAt"`
+	TransactionIndex uint64      `json:"txIndex"`
+	OperationIndex   uint64      `json:"opIndex"`
 }
 
 // SQLStore encapsulates the SQLite SQLStore functionality
@@ -77,26 +85,103 @@ func NewStore(dbFile string) (*SQLStore, error) {
 
 	// Check if schema exists and apply if needed
 	ctx := context.Background()
+
+	// Check if schema is up to date
+	readVersions := true
+	entitiesVersion := uint64(0)
+
 	var tableName string
 	err = db.QueryRowContext(ctx, `
 		SELECT name FROM sqlite_master
-		WHERE type='table' AND name='entities';
+		WHERE type='table' AND name='schema_versions';
 	`).Scan(&tableName)
 
 	switch err {
 	case sql.ErrNoRows:
-		err = sqlitegolem.ApplySchema(ctx, db)
-		if err != nil {
-			db.Close()
-			return nil, err
-		}
+		// In version 0, we didn't have the schema_versions table yet
+		entitiesVersion = 0
+		readVersions = false
+		log.Warn("arkiv: no schema version info found, table missing")
 	case nil:
-		// schema exists, do nothing
+		// The schema exists, we can read the versions from it
 	default:
+		// We got another error
 		db.Close()
 		return nil, fmt.Errorf("failed to check schema: %w", err)
 	}
 
+	if readVersions {
+		err = db.QueryRowContext(
+			ctx,
+			`SELECT entities FROM schema_versions WHERE id = 1;`,
+		).Scan(&entitiesVersion)
+
+		switch err {
+		case sql.ErrNoRows:
+			entitiesVersion = 0
+			log.Warn("arkiv: no schema version info found, table empty", "error", err)
+		case nil:
+			// We read the versions, all good
+			log.Info("arkiv: schema versions read from database", "entities", entitiesVersion)
+		default:
+			db.Close()
+			return nil, fmt.Errorf("failed to check schema: %w", err)
+		}
+	}
+
+	tx, err := db.BeginTx(ctx, nil)
+	if entitiesVersion != entitiesSchemaVersion {
+		log.Warn(
+			"arkiv: entities table has an outdated schema, dropping tables",
+			"existingVersion", entitiesVersion,
+			"requiredVersion", entitiesSchemaVersion,
+		)
+		_, err = tx.ExecContext(ctx, `DROP TABLE IF EXISTS entities;`)
+		if err != nil {
+			tx.Rollback()
+			db.Close()
+			return nil, fmt.Errorf("failed to drop entities table: %w", err)
+		}
+		_, err = tx.ExecContext(ctx, `DROP TABLE IF EXISTS string_annotations;`)
+		if err != nil {
+			tx.Rollback()
+			db.Close()
+			return nil, fmt.Errorf("failed to drop string_annotations table: %w", err)
+		}
+		_, err = tx.ExecContext(ctx, `DROP TABLE IF EXISTS numeric_annotations;`)
+		if err != nil {
+			tx.Rollback()
+			db.Close()
+			return nil, fmt.Errorf("failed to drop numeric_annotations table: %w", err)
+		}
+	}
+
+	log.Info("arkiv: applying database schema")
+	err = sqlitegolem.ApplySchemaTx(ctx, tx)
+	if err != nil {
+		tx.Rollback()
+		db.Close()
+		return nil, fmt.Errorf("failed to recreate schema: %w", err)
+	}
+
+	_, err = tx.ExecContext(
+		ctx,
+		`INSERT OR REPLACE INTO schema_versions (id, entities) VALUES (1, ?);`,
+		entitiesSchemaVersion)
+	if err != nil {
+		tx.Rollback()
+		db.Close()
+		return nil, fmt.Errorf("failed to update schema versions: %w", err)
+	}
+
+	err = tx.Commit()
+	if err != nil {
+		tx.Rollback()
+		db.Close()
+		return nil, fmt.Errorf("failed to recreate schema: %w", err)
+	}
+
+	log.Info("arkiv: database ready", "entitySchemaVersion", entitiesSchemaVersion)
 	return &SQLStore{db: db}, nil
 }
 
@@ -367,10 +452,14 @@ func (e *SQLStore) SnapSyncToBlock(
 
 		// Insert the entity
 		err = txDB.InsertEntity(ctx, sqlitegolem.InsertEntityParams{
-			Key:          entity.Key.Hex(),
-			ExpiresAt:    int64(entity.Metadata.ExpiresAtBlock),
-			Payload:      entity.Payload,
-			OwnerAddress: entity.Metadata.Owner.Hex(),
+			Key:                         entity.Key.Hex(),
+			ExpiresAt:                   int64(entity.Metadata.ExpiresAtBlock),
+			Payload:                     entity.Payload,
+			OwnerAddress:                entity.Metadata.Owner.Hex(),
+			CreatedAtBlock:              int64(entity.Metadata.CreatedAtBlock),
+			LastModifiedAtBlock:         int64(entity.Metadata.LastModifiedAtBlock),
+			TransactionIndexInBlock:     int64(entity.Metadata.TransactionIndex),
+			OperationIndexInTransaction: int64(entity.Metadata.OperationIndex),
 		})
 		if err != nil {
 			return fmt.Errorf("failed to insert entity %s: %w", entity.Key.Hex(), err)
@@ -488,10 +577,14 @@ func (e *SQLStore) InsertBlock(ctx context.Context, blockWal BlockWal, networkID
 		case op.Create != nil:
 			log.Info("create", "entity", op.Create.EntityKey.Hex())
 			err = txDB.InsertEntity(ctx, sqlitegolem.InsertEntityParams{
-				Key:          op.Create.EntityKey.Hex(),
-				ExpiresAt:    int64(op.Create.ExpiresAtBlock),
-				Payload:      op.Create.Payload,
-				OwnerAddress: op.Create.Owner.Hex(),
+				Key:                         op.Create.EntityKey.Hex(),
+				ExpiresAt:                   int64(op.Create.ExpiresAtBlock),
+				Payload:                     op.Create.Payload,
+				OwnerAddress:                op.Create.Owner.Hex(),
+				CreatedAtBlock:              int64(blockWal.BlockInfo.Number),
+				LastModifiedAtBlock:         int64(blockWal.BlockInfo.Number),
+				TransactionIndexInBlock:     int64(op.Create.TransactionIndex),
+				OperationIndexInTransaction: int64(op.Create.OperationIndex),
 			})
 			if err != nil {
 				return fmt.Errorf("failed to insert entity: %w", err)
@@ -529,10 +622,14 @@ func (e *SQLStore) InsertBlock(ctx context.Context, blockWal BlockWal, networkID
 			txDB.DeleteStringAnnotations(ctx, op.Update.EntityKey.Hex())
 
 			txDB.InsertEntity(ctx, sqlitegolem.InsertEntityParams{
-				Key:          op.Update.EntityKey.Hex(),
-				ExpiresAt:    int64(op.Update.ExpiresAtBlock),
-				Payload:      op.Update.Payload,
-				OwnerAddress: existingEntity.OwnerAddress,
+				Key:                         op.Update.EntityKey.Hex(),
+				ExpiresAt:                   int64(op.Update.ExpiresAtBlock),
+				Payload:                     op.Update.Payload,
+				OwnerAddress:                existingEntity.OwnerAddress,
+				CreatedAtBlock:              existingEntity.CreatedAtBlock,
+				LastModifiedAtBlock:         int64(blockWal.BlockInfo.Number),
+				TransactionIndexInBlock:     int64(op.Update.TransactionIndex),
+				OperationIndexInTransaction: int64(op.Update.OperationIndex),
 			})
 
 			for _, annotation := range op.Update.NumericAnnotations {
@@ -571,13 +668,17 @@ func (e *SQLStore) InsertBlock(ctx context.Context, blockWal BlockWal, networkID
 			if err != nil {
 				return fmt.Errorf("failed to delete string annotations: %w", err)
 			}
+
 		case op.Extend != nil:
 			log.Info("extend BTL", "entity", op.Extend.EntityKey.Hex())
 
 			// Update the entity with the new expiry time
 			err = txDB.UpdateEntityExpiresAt(ctx, sqlitegolem.UpdateEntityExpiresAtParams{
-				ExpiresAt: int64(op.Extend.NewExpiresAt),
-				Key:       op.Extend.EntityKey.Hex(),
+				ExpiresAt:                   int64(op.Extend.NewExpiresAt),
+				LastModifiedAtBlock:         int64(blockWal.BlockInfo.Number),
+				TransactionIndexInBlock:     int64(op.Extend.TransactionIndex),
+				OperationIndexInTransaction: int64(op.Extend.OperationIndex),
+				Key:                         op.Extend.EntityKey.Hex(),
 			})
 			if err != nil {
 				return fmt.Errorf("failed to extend entity BTL: %w", err)
