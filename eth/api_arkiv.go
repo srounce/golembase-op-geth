@@ -2,6 +2,7 @@ package eth
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"math/big"
 
@@ -21,8 +22,10 @@ type IncludeData struct {
 }
 
 type QueryOptions struct {
-	AtBlock     *uint64      `json:"at_block"`
-	IncludeData *IncludeData `json:"include_data"`
+	AtBlock        *uint64      `json:"atBlock"`
+	IncludeData    *IncludeData `json:"includeData"`
+	ResultsPerPage uint64       `json:"resultsPerPage"`
+	Cursor         uint64       `json:"cursor,string"`
 }
 
 var allColumns = []string{"key", "expires_at", "owner_address", "payload"}
@@ -43,11 +46,13 @@ func (options *QueryOptions) toInternalQueryOptions() internalQueryOptions {
 			Columns:            allColumns,
 			IncludeAnnotations: true,
 			AtBlock:            options.AtBlock,
+			Cursor:             options.Cursor,
 		}
 	default:
 		iq := internalQueryOptions{
 			Columns: []string{},
 			AtBlock: options.AtBlock,
+			Cursor:  options.Cursor,
 		}
 		if options.IncludeData.Annotations {
 			iq.IncludeAnnotations = true
@@ -69,11 +74,12 @@ func (options *QueryOptions) toInternalQueryOptions() internalQueryOptions {
 }
 
 type internalQueryOptions struct {
-	AtBlock *uint64 `json:"at_block"`
+	AtBlock *uint64
 	// TODO Ramses: implement this
 	// After that we can use it in GetEntityMetaData
-	IncludeAnnotations bool     `json:"include_annotations"`
-	Columns            []string `json:"columns"`
+	IncludeAnnotations bool
+	Columns            []string
+	Cursor             uint64
 }
 
 type arkivAPI struct {
@@ -114,22 +120,63 @@ func (api *arkivAPI) Query(
 		AtBlock:            block,
 		IncludeAnnotations: options.IncludeAnnotations,
 		Columns:            columns,
+		Offset:             options.Cursor,
 	}
 	query := expr.Evaluate(queryOptions)
 
-	results, err := api.store.QueryEntities(
+	response := &arkivtype.QueryResponse{
+		BlockNumber: block,
+		Data:        make([]json.RawMessage, 0),
+		Cursor:      0,
+	}
+
+	offset := options.Cursor
+
+	// 256 bytes is for the overhead of the 'envelope' around the entity data
+	// and the separator characters in between
+	responseSize := 256
+
+	// 256 kb
+	maxResponseSize := 256 * 1024 * 1024
+	maxResultsPerPage := 0
+
+	if op != nil {
+		maxResultsPerPage = int(op.ResultsPerPage)
+	}
+
+	err = api.store.QueryEntitiesInternalIterator(
 		ctx,
 		query.Query,
 		query.Args,
 		queryOptions,
+		func(entity arkivtype.EntityData) error {
+
+			ed, err := json.Marshal(entity)
+			if err != nil {
+				return fmt.Errorf("failed to marshal entity: %w", err)
+			}
+
+			newLen := responseSize + len(ed) + 1
+			if newLen > maxResponseSize {
+				response.Cursor = offset
+				return sqlstore.ErrStopIteration
+			}
+			response.Data = append(response.Data, ed)
+			offset++
+
+			if maxResultsPerPage > 0 && len(response.Data) >= maxResultsPerPage {
+				response.Cursor = offset
+				return sqlstore.ErrStopIteration
+			}
+
+			return nil
+		},
 	)
 	if err != nil {
 		return nil, fmt.Errorf("failed to execute query: %w", err)
 	}
 
-	return &arkivtype.QueryResponse{
-		Data: results,
-	}, nil
+	return response, nil
 }
 
 // GetEntityCount returns the total number of entities in the storage.

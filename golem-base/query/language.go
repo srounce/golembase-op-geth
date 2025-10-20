@@ -23,14 +23,15 @@ type QueryOptions struct {
 	AtBlock            uint64   `json:"at_block"`
 	IncludeAnnotations bool     `json:"include_annotations"`
 	Columns            []string `json:"columns"`
+	Offset             uint64   `json:"offset"`
+}
+
+func (opts *QueryOptions) AllColumns() []string {
+	return append(opts.Columns, "last_modified_at_block", "transaction_index_in_block", "operation_index_in_transaction")
 }
 
 func (opts *QueryOptions) columnString() string {
-	columns := opts.Columns
-	if len(columns) == 0 {
-		columns = COLUMNS
-	}
-	return strings.Join(columns, ", ")
+	return strings.Join(opts.AllColumns(), ", ")
 }
 
 // Define the lexer with distinct tokens for each operator and parentheses.
@@ -156,7 +157,11 @@ func (e *Expression) Evaluate(options QueryOptions) *SelectQuery {
 
 	tableBuilder.WriteString(" SELECT DISTINCT * FROM ")
 	tableBuilder.WriteString(tableName)
-	tableBuilder.WriteString(" ORDER BY 1")
+	tableBuilder.WriteString(" ORDER BY last_modified_at_block, transaction_index_in_block, operation_index_in_transaction")
+
+	if options.Offset > 0 {
+		tableBuilder.WriteString(fmt.Sprintf(" LIMIT 5000 OFFSET %d ", options.Offset))
+	}
 
 	return &SelectQuery{
 		Query:   tableBuilder.String(),
