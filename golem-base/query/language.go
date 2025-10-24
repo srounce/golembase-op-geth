@@ -13,40 +13,11 @@ import (
 	"github.com/ethereum/go-ethereum/golem-base/storageutil/entity"
 )
 
-// ALLCOLUMNS is used to verify user-supplied columns to protect against SQL injection
-var ALLCOLUMNS map[string]string = map[string]string{
-	"key":                            "key",
-	"payload":                        "payload",
-	"content_type":                   "content_type",
-	"expires_at":                     "expires_at",
-	"owner_address":                  "owner_address",
-	"last_modified_at_block":         "last_modified_at_block",
-	"transaction_index_in_block":     "transaction_index_in_block",
-	"operation_index_in_transaction": "operation_index_in_transaction",
-}
-
-func GetColumn(name string) (string, error) {
-	column, exists := ALLCOLUMNS[name]
-	if !exists {
-		return "", fmt.Errorf("invalid column name: %s", column)
-	}
-	return column, nil
-}
-
-// GetColumnOrPanic is used for non user-supplied columns, to detect wrong literals early
-func GetColumnOrPanic(name string) string {
-	column, err := GetColumn(name)
-	if err != nil {
-		panic(fmt.Sprintf("invalid column name: %s", column))
-	}
-	return column
-}
-
 type QueryOptions struct {
-	AtBlock            uint64           `json:"at_block"`
-	IncludeAnnotations bool             `json:"include_annotations"`
-	Columns            []string         `json:"columns"`
-	Offset             arkivtype.Offset `json:"offset"`
+	AtBlock            uint64                  `json:"at_block"`
+	IncludeAnnotations bool                    `json:"include_annotations"`
+	Columns            []string                `json:"columns"`
+	Offset             []arkivtype.OffsetValue `json:"offset"`
 }
 
 func (opts *QueryOptions) AllColumns() []string {
@@ -55,9 +26,9 @@ func (opts *QueryOptions) AllColumns() []string {
 
 func (opts *QueryOptions) OrderByColumns() []string {
 	return []string{
-		GetColumnOrPanic("last_modified_at_block"),
-		GetColumnOrPanic("transaction_index_in_block"),
-		GetColumnOrPanic("operation_index_in_transaction"),
+		arkivtype.GetColumnOrPanic("last_modified_at_block"),
+		arkivtype.GetColumnOrPanic("transaction_index_in_block"),
+		arkivtype.GetColumnOrPanic("operation_index_in_transaction"),
 	}
 }
 
@@ -222,8 +193,6 @@ func (e *Expression) Evaluate(options QueryOptions) *SelectQuery {
 
 	tableName := e.Or.Evaluate(&builder)
 
-	// TODO: check if it is more performant to push this into the different
-	// subqueries instead of only having this condition on the outer query
 	paginationCondition, paginationArgs := builder.getPaginationArguments()
 
 	builder.args = append(builder.args, paginationArgs...)
