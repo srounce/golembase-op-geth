@@ -18,7 +18,10 @@ import (
 	"github.com/ethereum/go-ethereum/log"
 	"github.com/ethereum/go-ethereum/rlp"
 	"github.com/holiman/uint256"
+	"github.com/klauspost/compress/zstd"
 )
+
+var decoder, _ = zstd.NewReader(nil)
 
 func WriteLogForBlockSqlite(
 	sqlStore *SQLStore,
@@ -99,7 +102,7 @@ func WriteLogForBlockSqlite(
 						yield(nil, fmt.Errorf("failed to get entity metadata for key %s: %w", entityKey.Hex(), err))
 						return
 					}
-					payload := entity.GetPayload(statedb, entityKey)
+					payload := entity.GetCompressedPayload(statedb, entityKey)
 
 					if !yield(&struct {
 						Key      common.Hash
@@ -198,8 +201,13 @@ func WriteLogForBlockSqlite(
 
 			case toAddr == address.ArkivProcessorAddress:
 
+				d, err := decoder.DecodeAll(tx.Data(), nil)
+				if err != nil {
+					return fmt.Errorf("failed to decode compressed storage transaction: %w", err)
+				}
+
 				stx := storagetx.ArkivTransaction{}
-				err := rlp.DecodeBytes(tx.Data(), &stx)
+				err = rlp.DecodeBytes(d, &stx)
 				if err != nil {
 					return fmt.Errorf("failed to decode storage transaction: %w", err)
 				}
@@ -257,6 +265,8 @@ func WriteLogForBlockSqlite(
 	return nil
 }
 
+var encoder, _ = zstd.NewWriter(nil, zstd.WithEncoderLevel(zstd.SpeedBetterCompression))
+
 func extractArkivOperations(
 	stx *storagetx.ArkivTransaction,
 	txIx int,
@@ -302,7 +312,7 @@ func extractArkivOperations(
 		cr := Create{
 			EntityKey:          key,
 			ExpiresAtBlock:     expiresAtBlock,
-			Payload:            create.Payload,
+			Payload:            encoder.EncodeAll(create.Payload, nil),
 			ContentType:        create.ContentType,
 			StringAnnotations:  create.StringAnnotations,
 			NumericAnnotations: create.NumericAnnotations,
@@ -337,7 +347,7 @@ func extractArkivOperations(
 		ur := Update{
 			EntityKey:          key,
 			ExpiresAtBlock:     expiresAtBlock,
-			Payload:            update.Payload,
+			Payload:            encoder.EncodeAll(update.Payload, nil),
 			ContentType:        update.ContentType,
 			StringAnnotations:  update.StringAnnotations,
 			NumericAnnotations: update.NumericAnnotations,

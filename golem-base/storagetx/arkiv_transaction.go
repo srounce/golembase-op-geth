@@ -1,7 +1,9 @@
 package storagetx
 
 import (
+	"bytes"
 	"fmt"
+	"io"
 	"math/big"
 
 	"github.com/ethereum/go-ethereum/common"
@@ -15,6 +17,7 @@ import (
 	"github.com/ethereum/go-ethereum/log"
 	"github.com/ethereum/go-ethereum/rlp"
 	"github.com/holiman/uint256"
+	"github.com/klauspost/compress/zstd"
 )
 
 //go:generate go run ../../rlp/rlpgen -type ArkivTransaction -out gen_arkiv_transaction_rlp.go
@@ -445,9 +448,25 @@ func (tx *ArkivTransaction) Run(blockNumber uint64, txHash common.Hash, txIx int
 	return logs, nil
 }
 
-func ExecuteArkivTransaction(d []byte, blockNumber uint64, txHash common.Hash, txIx int, sender common.Address, access storageutil.StateAccess) ([]*types.Log, error) {
+const maxCompressedSize = 1024 * 1024 * 20 // 10MB
+
+func ExecuteArkivTransaction(compressed []byte, blockNumber uint64, txHash common.Hash, txIx int, sender common.Address, access storageutil.StateAccess) ([]*types.Log, error) {
+
+	reader, err := zstd.NewReader(bytes.NewReader(compressed))
+	if err != nil {
+		return nil, fmt.Errorf("failed to create zstd reader: %w", err)
+	}
+	defer reader.Close()
+
+	lr := io.LimitReader(reader, maxCompressedSize)
+
+	d, err := io.ReadAll(lr)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read compressed storage transaction: %w", err)
+	}
+
 	tx := &ArkivTransaction{}
-	err := rlp.DecodeBytes(d, tx)
+	err = rlp.DecodeBytes(d, tx)
 	if err != nil {
 		return nil, fmt.Errorf("failed to decode storage transaction: %w", err)
 	}
