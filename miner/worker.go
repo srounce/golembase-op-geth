@@ -176,7 +176,7 @@ func (miner *Miner) generateWork(genParam *generateParams, witness bool) *newPay
 
 	// If there are no transactions, add a housekeeping transaction.
 	// This is for the case we're running geth in dev mode wihtout op-node running.
-	if len(genParam.txs) == 0 {
+	if miner.config.DevMode && len(genParam.txs) == 0 {
 		genParam.txs = types.Transactions{
 			types.NewTx(&types.DepositTx{
 				// System address

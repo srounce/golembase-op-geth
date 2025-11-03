@@ -1483,6 +1483,7 @@ func setEtherbase(ctx *cli.Context, cfg *ethconfig.Config) {
 		return
 	}
 	cfg.Miner.PendingFeeRecipient = common.BytesToAddress(b)
+
 }
 
 func SetP2PConfig(ctx *cli.Context, cfg *p2p.Config) {
@@ -1723,6 +1724,12 @@ func setBlobPool(ctx *cli.Context, cfg *blobpool.Config) {
 }
 
 func setMiner(ctx *cli.Context, cfg *miner.Config) {
+
+	if ctx.Bool(DeveloperFlag.Name) {
+		log.Info("arkiv: Developer flag set, enabling dev mode for miner")
+		cfg.DevMode = true
+	}
+
 	if ctx.Bool(MiningEnabledFlag.Name) {
 		log.Warn("The flag --mine is deprecated and will be removed")
 	}
