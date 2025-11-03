@@ -69,11 +69,11 @@ func (api *golemBaseAPI) GetEntityMetaData(ctx context.Context, key common.Hash)
 		fmt.Sprintf("$key = %s", key),
 		&QueryOptions{
 			IncludeData: &IncludeData{
-				Annotations: true,
-				Key:         true,
-				Expiration:  true,
-				Owner:       true,
-				Payload:     true,
+				Attributes: true,
+				Key:        true,
+				Expiration: true,
+				Owner:      true,
+				Payload:    true,
 			},
 		},
 	)
@@ -95,8 +95,8 @@ func (api *golemBaseAPI) GetEntityMetaData(ctx context.Context, key common.Hash)
 	return &entity.EntityMetaData{
 		ExpiresAtBlock:     *metadata.ExpiresAt,
 		Owner:              *metadata.Owner,
-		StringAnnotations:  metadata.StringAnnotations,
-		NumericAnnotations: metadata.NumericAnnotations,
+		StringAnnotations:  metadata.StringAttributes,
+		NumericAnnotations: metadata.NumericAttributes,
 	}, nil
 }
 

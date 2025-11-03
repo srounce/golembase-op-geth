@@ -171,6 +171,6 @@ type EntityData struct {
 	ExpiresAt   *uint64         `json:"expiresAt,omitempty"`
 	Owner       *common.Address `json:"owner,omitempty"`
 
-	StringAnnotations  []entity.StringAnnotation  `json:"stringAnnotations,omitempty"`
-	NumericAnnotations []entity.NumericAnnotation `json:"numericAnnotations,omitempty"`
+	StringAttributes  []entity.StringAnnotation  `json:"stringAttributes,omitempty"`
+	NumericAttributes []entity.NumericAnnotation `json:"numericAttributes,omitempty"`
 }

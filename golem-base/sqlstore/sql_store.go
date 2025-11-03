@@ -912,13 +912,13 @@ func (e *SQLStore) QueryEntitiesInternalIterator(
 		}
 
 		r := arkivtype.EntityData{
-			Key:                key,
-			ExpiresAt:          result.expiresAt,
-			Value:              payload,
-			ContentType:        result.contentType,
-			Owner:              owner,
-			StringAnnotations:  []entity.StringAnnotation{},
-			NumericAnnotations: []entity.NumericAnnotation{},
+			Key:               key,
+			ExpiresAt:         result.expiresAt,
+			Value:             payload,
+			ContentType:       result.contentType,
+			Owner:             owner,
+			StringAttributes:  []entity.StringAnnotation{},
+			NumericAttributes: []entity.NumericAnnotation{},
 		}
 
 		offset := arkivtype.Offset{
@@ -955,7 +955,7 @@ func (e *SQLStore) QueryEntitiesInternalIterator(
 			// Convert string annotations
 			for _, row := range stringAnnotRows {
 				if row.AnnotationKey != "$key" && row.AnnotationKey != "$owner" {
-					r.StringAnnotations = append(r.StringAnnotations, entity.StringAnnotation{
+					r.StringAttributes = append(r.StringAttributes, entity.StringAnnotation{
 						Key:   row.AnnotationKey,
 						Value: row.Value,
 					})
@@ -965,7 +965,7 @@ func (e *SQLStore) QueryEntitiesInternalIterator(
 			// Convert numeric annotations
 			for _, row := range numericAnnotRows {
 				if row.AnnotationKey != "$expiration" {
-					r.NumericAnnotations = append(r.NumericAnnotations, entity.NumericAnnotation{
+					r.NumericAttributes = append(r.NumericAttributes, entity.NumericAnnotation{
 						Key:   row.AnnotationKey,
 						Value: uint64(row.Value),
 					})
