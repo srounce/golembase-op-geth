@@ -284,7 +284,35 @@ func (b *EthAPIBackend) HistoryPruningCutoff() uint64 {
 }
 
 func (b *EthAPIBackend) GetReceipts(ctx context.Context, hash common.Hash) (types.Receipts, error) {
-	return b.eth.blockchain.GetReceiptsByHash(hash), nil
+	receipts := b.eth.blockchain.GetReceiptsByHash(hash)
+
+	if len(receipts) == 0 {
+		return nil, errors.New("receipts not found")
+	}
+
+	var lastBlock uint64
+
+	for _, receipt := range receipts {
+		if receipt.BlockNumber.Uint64() > lastBlock {
+			lastBlock = receipt.BlockNumber.Uint64()
+		}
+	}
+
+	for {
+		header := b.eth.blockchain.CurrentBlock()
+		if header == nil || header.Number.Uint64() < lastBlock {
+			select {
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			case <-time.After(300 * time.Millisecond):
+				continue
+			}
+		}
+		break
+	}
+
+	return receipts, nil
+
 }
 
 func (b *EthAPIBackend) GetCanonicalReceipt(tx *types.Transaction, blockHash common.Hash, blockNumber, blockIndex uint64) (*types.Receipt, error) {
