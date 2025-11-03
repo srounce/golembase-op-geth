@@ -1232,17 +1232,17 @@ func (bc *BlockChain) writeHeadBlock(block *types.Block) {
 	rawdb.WriteTxLookupEntriesByBlock(batch, block)
 	rawdb.WriteHeadBlockHash(batch, block.Hash())
 
-	// Flush the whole batch into the disk, exit the node if failed
-	if err := batch.Write(); err != nil {
-		log.Crit("Failed to update chain indexes and markers", "err", err)
-	}
-
 	if bc.onNewBlock != nil {
 		receipts := bc.GetReceiptsByHash(block.Hash())
 		err := bc.onNewBlock(bc.statedb, bc.hc, bc.chainConfig.ChainID, block, receipts)
 		if err != nil {
 			log.Warn("Failed to call onNewBlock", "err", err)
 		}
+	}
+
+	// Flush the whole batch into the disk, exit the node if failed
+	if err := batch.Write(); err != nil {
+		log.Crit("Failed to update chain indexes and markers", "err", err)
 	}
 
 	// Update all in-memory chain markers in the last step
