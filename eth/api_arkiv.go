@@ -17,7 +17,7 @@ import (
 
 type IncludeData struct {
 	Key         bool `json:"key"`
-	Annotations bool `json:"annotations"`
+	Attributes  bool `json:"attributes"`
 	Payload     bool `json:"payload"`
 	ContentType bool `json:"contentType"`
 	Expiration  bool `json:"expiration"`
@@ -96,7 +96,7 @@ func (options *QueryOptions) toInternalQueryOptions() (*internalQueryOptions, er
 			AtBlock: options.AtBlock,
 			Offset:  offset,
 		}
-		if options.IncludeData.Annotations {
+		if options.IncludeData.Attributes {
 			iq.IncludeAnnotations = true
 		}
 		if options.IncludeData.Payload {

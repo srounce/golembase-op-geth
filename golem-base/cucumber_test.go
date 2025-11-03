@@ -342,11 +342,11 @@ func theResponseWouldBeEmpty(ctx context.Context) error {
 		if ed.Owner != nil {
 			return fmt.Errorf("expected owner to be nil, but got: %s", ed.Owner.Hex())
 		}
-		if ed.StringAnnotations != nil {
-			return fmt.Errorf("expected string annotations to be nil, but got array of length %d", len(ed.StringAnnotations))
+		if ed.StringAttributes != nil {
+			return fmt.Errorf("expected string annotations to be nil, but got array of length %d", len(ed.StringAttributes))
 		}
-		if ed.NumericAnnotations != nil {
-			return fmt.Errorf("expected numericAnnotations to be nil, but got array of length %d", len(ed.NumericAnnotations))
+		if ed.NumericAttributes != nil {
+			return fmt.Errorf("expected numericAnnotations to be nil, but got array of length %d", len(ed.NumericAttributes))
 		}
 	}
 
