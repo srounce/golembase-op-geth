@@ -6,8 +6,12 @@
     systems.url = "github:nix-systems/default";
 
     rpcplorer = {
-      url = "github:Golem-Base/rpcplorer/v0.0.3";
-      inputs.systems.follows = "systems";
+      # TODO: switch back to a release once the commit below was released
+      url = "github:Golem-Base/rpcplorer?ref=6db09b8e9de012a7b5fb5d90571ad5661e4d95c6";
+      inputs = {
+        systems.follows = "systems";
+        nixpkgs.follows = "nixpkgs";
+      };
     };
   };
 
@@ -64,7 +68,7 @@
             name = "golembase";
             src = ./.;
             subPackages = [ "cmd/golembase" ];
-            vendorHash = "sha256-o1eCDg0pec+p9BSRoftaytPd3DUTEA+xyU4tQkmBiAQ=";
+            vendorHash = "sha256-WTu9FStwabZUf9fe07OLIRZbInsWhi4j3180D/KiFXU=";
             meta = with lib; {
               description = "golembase CLI - Golem Base";
               homepage = "https://github.com/Golem-Base/golembase-op-geth";
