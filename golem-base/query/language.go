@@ -4,6 +4,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"maps"
 	"slices"
 	"strings"
 
@@ -16,11 +17,12 @@ import (
 )
 
 type QueryOptions struct {
-	AtBlock            uint64
-	IncludeAnnotations bool
-	Columns            []string
-	OrderBy            []arkivtype.OrderByAnnotation
-	Cursor             []arkivtype.CursorValue
+	AtBlock                     uint64
+	IncludeAnnotations          bool
+	IncludeSyntheticAnnotations bool
+	Columns                     map[string]string
+	OrderBy                     []arkivtype.OrderByAnnotation
+	Cursor                      []arkivtype.CursorValue
 
 	// Cache the sorted list of unique columns to fetch
 	allColumnsSorted []string
@@ -148,7 +150,7 @@ func (opts *QueryOptions) DecodeCursor(cursorStr string) (*arkivtype.Cursor, err
 func (opts *QueryOptions) AllColumns() []string {
 	if opts.allColumnsSorted == nil {
 
-		columns := opts.Columns
+		columns := slices.Collect(maps.Values(opts.Columns))
 
 		for i := range opts.OrderBy {
 			columns = append(columns, fmt.Sprintf("arkiv_annotation_sorting%d.value", i))
@@ -223,6 +225,7 @@ var lex = lexer.MustSimple([]lexer.SimpleRule{
 	{Name: "Ident", Pattern: entity.AnnotationIdentRegex},
 	// Meta-annotations, should start with $
 	{Name: "Owner", Pattern: `\$owner`},
+	{Name: "Creator", Pattern: `\$creator`},
 	{Name: "Key", Pattern: `\$key`},
 	{Name: "Expiration", Pattern: `\$expiration`},
 	{Name: "Sequence", Pattern: `\$sequence`},
@@ -1080,7 +1083,7 @@ func (e *GreaterOrEqualThan) Evaluate(b *QueryBuilder) string {
 
 // Equality represents a simple equality (e.g. name = 123).
 type Equality struct {
-	Var   string `parser:"@(Ident | Key | Owner | Expiration | Sequence)"`
+	Var   string `parser:"@(Ident | Key | Owner | Creator | Expiration | Sequence)"`
 	IsNot bool   `parser:"(Eq | @Neq)"`
 	Value Value  `parser:"@@"`
 }
@@ -1097,7 +1100,9 @@ func (e *Equality) Evaluate(b *QueryBuilder) string {
 	if e.Value.String != nil {
 
 		value := *e.Value.String
-		if e.Var == "$owner" || e.Var == "$key" {
+		if e.Var == arkivtype.OwnerAttributeKey ||
+			e.Var == arkivtype.CreatorAttributeKey ||
+			e.Var == arkivtype.KeyAttributeKey {
 			value = strings.ToLower(value)
 		}
 
@@ -1145,7 +1150,7 @@ func (e *Equality) Evaluate(b *QueryBuilder) string {
 }
 
 type Inclusion struct {
-	Var    string `parser:"@(Ident | Key | Owner | Expiration | Sequence)"`
+	Var    string `parser:"@(Ident | Key | Owner | Creator | Expiration | Sequence)"`
 	IsNot  bool   `parser:"(@('NOT'|'not')? ('IN'|'in'))"`
 	Values Values `parser:"@@"`
 }
@@ -1164,7 +1169,9 @@ func (e *Inclusion) Evaluate(b *QueryBuilder) string {
 		values := make([]any, 0, len(e.Values.Strings)+1)
 		values = append(values, e.Var)
 		for _, value := range e.Values.Strings {
-			if e.Var == "$owner" || e.Var == "$key" {
+			if e.Var == arkivtype.OwnerAttributeKey ||
+				e.Var == arkivtype.CreatorAttributeKey ||
+				e.Var == arkivtype.KeyAttributeKey {
 				values = append(values, strings.ToLower(value))
 			} else {
 				values = append(values, value)
