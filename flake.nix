@@ -7,7 +7,7 @@
 
     rpcplorer = {
       # TODO: switch back to a release once the commit below was released
-      url = "github:Golem-Base/rpcplorer?ref=6db09b8e9de012a7b5fb5d90571ad5661e4d95c6";
+      url = "github:Golem-Base/rpcplorer?ref=1021adbfc765d9c36d565907cda7e5e48c6b597b";
       inputs = {
         systems.follows = "systems";
         nixpkgs.follows = "nixpkgs";
