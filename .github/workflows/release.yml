@@ -96,17 +96,10 @@ jobs:
         with:
           path: release-assets
 
-      - run: ls -lhaR release-assets
-
       - name: Create Release
         id: create_release
-        uses: softprops/action-gh-release@a06a81a03ee405af7f2048a818ed3f03bbf83c7b # v2.5.0
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        uses: ncipollo/release-action@b7eabc95ff50cbeeedec83973935c8f306dfcd0b # v1.20.0
         with:
-          generate_release_notes: true
-          make_latest: true
-          fail_on_unmatched_files: true
-          files: |
-            release-assets/*/*.tar.gz
-            release-assets/*/*.tar.gz.sha256
+          makeLatest: true
+          generateReleaseNotes: true
+          artifacts: "release-assets/*/*.tar.gz{,.sha256}"
