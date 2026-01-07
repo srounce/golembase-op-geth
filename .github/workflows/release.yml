@@ -105,7 +105,6 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
           generate_release_notes: true
-          append_body: true
           make_latest: true
           fail_on_unmatched_files: true
           files: |
