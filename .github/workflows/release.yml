@@ -96,8 +96,6 @@ jobs:
         with:
           path: release-assets
 
-      - run: ls -lhaR release-assets
-
       - name: Create Release
         id: create_release
         uses: softprops/action-gh-release@a06a81a03ee405af7f2048a818ed3f03bbf83c7b # v2.5.0
